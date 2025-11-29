@@ -40,19 +40,16 @@ jobs:
         pip install pyinstaller
     
     - name: Build with PyInstaller
-      run: python build.py
+      run: |
+        pyinstaller --onefile --name "${{ matrix.asset_name }}" main.py
       env:
         SPECIAL_MATER_API: ${{ secrets.SPECIAL_MATER_API }}
-        OUTPUT_NAME: ${{ matrix.asset_name }}
-        # …Ë÷√ Python UTF-8 ƒ£ Ω
-        PYTHONUTF8: 1
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.asset_name }}
         path: dist/${{ matrix.asset_name }}
-        retention-days: 7
     
     - name: Create Release
       if: github.event_name == 'release'
