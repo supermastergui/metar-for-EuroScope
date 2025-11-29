@@ -41,7 +41,7 @@ jobs:
     
     - name: Replace SPECIAL_MATER_API value in main.py
       run: |
-        python -c "from pathlib import Path; txt = Path('main.py').read_text(); txt = txt.replace('!ENV SPECIAL_MATER_API', '***'); Path('main.py').write_text(txt)"
+        python -c "from pathlib import Path; txt = Path('main.py').read_text(encoding='utf-8'); txt = txt.replace('!ENV SPECIAL_MATER_API', '***'); Path('main.py').write_text(txt, encoding='utf-8')"
 
     - name: Build with PyInstaller
       run: |
