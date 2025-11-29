@@ -41,7 +41,11 @@ jobs:
     
     - name: Replace SPECIAL_MATER_API value in main.py
       run: |
-        sed -i "s|!ENV SPECIAL_MATER_API|${{ secrets.SPECIAL_MATER_API }}|g" main.py
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          sed -i '' "s|!ENV SPECIAL_MATER_API|${{ secrets.SPECIAL_MATER_API }}|g" main.py
+        else
+          sed -i "s|!ENV SPECIAL_MATER_API|${{ secrets.SPECIAL_MATER_API }}|g" main.py
+        fi
 
     - name: Build with PyInstaller
       run: |
