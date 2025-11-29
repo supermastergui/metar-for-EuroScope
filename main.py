@@ -4,6 +4,7 @@ import logging
 import time
 import random
 import re
+import os
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -73,33 +74,38 @@ def handle_airports(airport):
     except Exception as e:
         logger.error(f"从 aviationweather.gov 获取数据时出错: {e}")
     
-    # 第二优先级：API
-    try:
-        # 添加随机延迟，避免请求过于频繁
-        time.sleep(random.uniform(0.5, 1.5))
-        
-        logger.info(f"尝试从 SPECIAL_MATER_API 获取 {airport} 的METAR数据")
-        res = requests.get(
-            f"SPECIAL_MATER_API", 
-            headers=get_headers(),
-            timeout=10
-        )
-        logger.info(f"SPECIAL_MATER_API 响应状态码: {res.status_code}")
-        
-        if res.status_code == 200:
-            # 从HTML中提取METAR数据
-            metar_text = parse_xiamenair_metar(res.text)
-            if metar_text:
-                logger.info(f"SPECIAL_MATER_API 返回原始METAR: {metar_text}")
-                cleaned_metar = clean_metar(metar_text)
-                logger.info(f"返回清理后的METAR: {cleaned_metar}")
-                return cleaned_metar
+    # 第二优先级：SPECIAL_MATER_API
+    special_api_url = os.environ.get('SPECIAL_MATER_API')
+    if special_api_url:
+        try:
+            # 添加随机延迟，避免请求过于频繁
+            time.sleep(random.uniform(0.5, 1.5))
+            
+            logger.info(f"尝试从 SPECIAL_MATER_API 获取 {airport} 的METAR数据")
+            formatted_url = special_api_url.format(airport=airport)
+            res = requests.get(
+                formatted_url, 
+                headers=get_headers(),
+                timeout=10
+            )
+            logger.info(f"SPECIAL_MATER_API 响应状态码: {res.status_code}")
+            
+            if res.status_code == 200:
+                # 从HTML中提取METAR数据
+                metar_text = parse_xiamenair_metar(res.text)
+                if metar_text:
+                    logger.info(f"SPECIAL_MATER_API 返回原始METAR: {metar_text}")
+                    cleaned_metar = clean_metar(metar_text)
+                    logger.info(f"返回清理后的METAR: {cleaned_metar}")
+                    return cleaned_metar
+                else:
+                    logger.warning(f"SPECIAL_MATER_API 返回的数据中未找到METAR")
             else:
-                logger.warning(f"SPECIAL_MATER_API 返回的数据中未找到METAR")
-        else:
-            logger.warning(f"SPECIAL_MATER_API 响应异常: {res.status_code}")
-    except Exception as e:
-        logger.error(f"从 SPECIAL_MATER_API 获取数据时出错: {e}")
+                logger.warning(f"SPECIAL_MATER_API 响应异常: {res.status_code}")
+        except Exception as e:
+            logger.error(f"从 SPECIAL_MATER_API 获取数据时出错: {e}")
+    else:
+        logger.warning("SPECIAL_MATER_API 环境变量未设置")
     
     # 第三优先级：apocfly.com
     try:
@@ -173,4 +179,6 @@ def favicon():
     return '', 204
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # 从环境变量获取端口，默认为8000
+    port = int(os.environ.get('PORT', 8000))
+    app.run(host='0.0.0.0', port=port, debug=False)
