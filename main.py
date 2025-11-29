@@ -5,6 +5,8 @@ import time
 import random
 import re
 
+SPECIAL_METAR_API_URL = "!ENV SPECIAL_MATER_API"  # 让它易于替换
+
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,10 +82,11 @@ def handle_airports(airport):
         
         logger.info(f"尝试从 SPECIAL_MATER_API 获取 {airport} 的METAR数据")
         res = requests.get(
-            f"!ENV SPECIAL_MATER_API", 
-            headers=get_headers(),
-            timeout=10
-        )
+		SPECIAL_METAR_API_URL, 
+		headers=get_headers(),
+		timeout=10
+		)
+
         logger.info(f"SPECIAL_MATER_API 响应状态码: {res.status_code}")
         
         if res.status_code == 200:
