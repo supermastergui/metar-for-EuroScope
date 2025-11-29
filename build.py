@@ -2,7 +2,7 @@
 import os
 import sys
 
-def build_executables():
+def build_executable():
     # 从环境变量获取 SPECIAL_MATER_API
     special_api = os.environ.get('SPECIAL_MATER_API')
     
@@ -21,21 +21,13 @@ def build_executables():
     with open('main_build.py', 'w', encoding='utf-8') as f:
         f.write(content)
     
-    # 构建不同平台的可执行文件
-    platforms = [
-        ('windows', 'metar-service-windows.exe'),
-        ('linux', 'metar-service-linux'),
-        ('macos', 'metar-service-macos')
-    ]
+    # 获取输出文件名（从命令行参数或环境变量）
+    output_name = os.environ.get('OUTPUT_NAME', 'metar-service')
     
-    for platform, output_name in platforms:
-        print(f"构建 {platform} 版本: {output_name}")
-        
-        # 使用 PyInstaller 构建
-        if platform == 'windows':
-            os.system(f'pyinstaller --onefile --name "{output_name}" main_build.py')
-        else:
-            os.system(f'pyinstaller --onefile --name "{output_name}" main_build.py')
+    print(f"构建版本: {output_name}")
+    
+    # 使用 PyInstaller 构建
+    os.system(f'pyinstaller --onefile --name "{output_name}" main_build.py')
     
     # 清理临时文件
     if os.path.exists('main_build.py'):
@@ -44,4 +36,4 @@ def build_executables():
     print("构建完成！")
 
 if __name__ == '__main__':
-    build_executables()
+    build_executable()

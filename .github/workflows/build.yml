@@ -40,52 +40,10 @@ jobs:
         pip install pyinstaller
     
     - name: Build with PyInstaller
-      run: |
-        # 创建临时构建脚本
-        cat > build_temp.py << 'EOF'
-import os
-import sys
-
-def build_executable():
-    # 从环境变量获取 SPECIAL_MATER_API
-    special_api = os.environ.get('SPECIAL_MATER_API')
-    
-    if not special_api:
-        print("错误: 未设置 SPECIAL_MATER_API 环境变量")
-        sys.exit(1)
-    
-    # 读取原始代码
-    with open('main.py', 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # 替换占位符
-    content = content.replace('SPECIAL_MATER_API_PLACEHOLDER', special_api)
-    
-    # 写入临时文件
-    with open('main_build.py', 'w', encoding='utf-8') as f:
-        f.write(content)
-    
-    # 构建可执行文件
-    output_name = "${{ matrix.asset_name }}"
-    print(f"构建版本: {output_name}")
-    
-    # 使用 PyInstaller 构建
-    os.system(f'pyinstaller --onefile --name "{output_name}" main_build.py')
-    
-    # 清理临时文件
-    if os.path.exists('main_build.py'):
-        os.remove('main_build.py')
-    
-    print("构建完成！")
-
-if __name__ == '__main__':
-    build_executable()
-EOF
-
-        # 运行构建脚本
-        python build_temp.py
+      run: python build.py
       env:
         SPECIAL_MATER_API: ${{ secrets.SPECIAL_MATER_API }}
+        OUTPUT_NAME: ${{ matrix.asset_name }}
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
