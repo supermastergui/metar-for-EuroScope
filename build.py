@@ -3,25 +3,25 @@ import os
 import sys
 
 def build_executables():
-    # ´Ó»·¾³±äÁ¿»ñÈ¡ SPECIAL_MATER_API
+    # ä»ç¯å¢ƒå˜é‡è·å– SPECIAL_MATER_API
     special_api = os.environ.get('SPECIAL_MATER_API')
     
     if not special_api:
-        print("´íÎó: Î´ÉèÖÃ SPECIAL_MATER_API »·¾³±äÁ¿")
+        print("é”™è¯¯: æœªè®¾ç½® SPECIAL_MATER_API ç¯å¢ƒå˜é‡")
         sys.exit(1)
     
-    # ¶ÁÈ¡Ô­Ê¼´úÂë
+    # è¯»å–åŸå§‹ä»£ç 
     with open('main.py', 'r', encoding='utf-8') as f:
         content = f.read()
     
-    # Ìæ»»Õ¼Î»·û
+    # æ›¿æ¢å ä½ç¬¦
     content = content.replace('SPECIAL_MATER_API_PLACEHOLDER', special_api)
     
-    # Ğ´ÈëÁÙÊ±ÎÄ¼ş
+    # å†™å…¥ä¸´æ—¶æ–‡ä»¶
     with open('main_build.py', 'w', encoding='utf-8') as f:
         f.write(content)
     
-    # ¹¹½¨²»Í¬Æ½Ì¨µÄ¿ÉÖ´ĞĞÎÄ¼ş
+    # æ„å»ºä¸åŒå¹³å°çš„å¯æ‰§è¡Œæ–‡ä»¶
     platforms = [
         ('windows', 'metar-service-windows.exe'),
         ('linux', 'metar-service-linux'),
@@ -29,19 +29,19 @@ def build_executables():
     ]
     
     for platform, output_name in platforms:
-        print(f"¹¹½¨ {platform} °æ±¾: {output_name}")
+        print(f"æ„å»º {platform} ç‰ˆæœ¬: {output_name}")
         
-        # Ê¹ÓÃ PyInstaller ¹¹½¨
+        # ä½¿ç”¨ PyInstaller æ„å»º
         if platform == 'windows':
             os.system(f'pyinstaller --onefile --name "{output_name}" main_build.py')
         else:
             os.system(f'pyinstaller --onefile --name "{output_name}" main_build.py')
     
-    # ÇåÀíÁÙÊ±ÎÄ¼ş
+    # æ¸…ç†ä¸´æ—¶æ–‡ä»¶
     if os.path.exists('main_build.py'):
         os.remove('main_build.py')
     
-    print("¹¹½¨Íê³É£¡")
+    print("æ„å»ºå®Œæˆï¼")
 
 if __name__ == '__main__':
     build_executables()

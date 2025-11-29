@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# 构建时注入的配置
+SPECIAL_MATER_API = "SPECIAL_MATER_API_PLACEHOLDER"
+
 # 用户代理列表，模拟不同浏览器
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -30,7 +33,7 @@ def clean_metar(metar_text):
         return metar_text[6:]  # 移除前6个字符 ("METAR ")
     return metar_text
 
-def parse_xiamenair_metar(html_content):
+def parse_special_metar(html_content):
     """从API的HTML响应中提取METAR数据"""
     try:
         # 使用正则表达式匹配METAR行
@@ -75,14 +78,13 @@ def handle_airports(airport):
         logger.error(f"从 aviationweather.gov 获取数据时出错: {e}")
     
     # 第二优先级：SPECIAL_MATER_API
-    special_api_url = os.environ.get('SPECIAL_MATER_API')
-    if special_api_url:
+    if SPECIAL_MATER_API and SPECIAL_MATER_API != "SPECIAL_MATER_API_PLACEHOLDER":
         try:
             # 添加随机延迟，避免请求过于频繁
             time.sleep(random.uniform(0.5, 1.5))
             
             logger.info(f"尝试从 SPECIAL_MATER_API 获取 {airport} 的METAR数据")
-            formatted_url = special_api_url.format(airport=airport)
+            formatted_url = SPECIAL_MATER_API.format(airport=airport)
             res = requests.get(
                 formatted_url, 
                 headers=get_headers(),
@@ -92,7 +94,7 @@ def handle_airports(airport):
             
             if res.status_code == 200:
                 # 从HTML中提取METAR数据
-                metar_text = parse_xiamenair_metar(res.text)
+                metar_text = parse_special_metar(res.text)
                 if metar_text:
                     logger.info(f"SPECIAL_MATER_API 返回原始METAR: {metar_text}")
                     cleaned_metar = clean_metar(metar_text)
@@ -105,7 +107,7 @@ def handle_airports(airport):
         except Exception as e:
             logger.error(f"从 SPECIAL_MATER_API 获取数据时出错: {e}")
     else:
-        logger.warning("SPECIAL_MATER_API 环境变量未设置")
+        logger.warning("SPECIAL_MATER_API 未配置")
     
     # 第三优先级：apocfly.com
     try:
