@@ -42,7 +42,7 @@ jobs:
     - name: Replace SPECIAL_MATER_API value in main.py
       run: |
         sed -i "s|!ENV SPECIAL_MATER_API|${{ secrets.SPECIAL_MATER_API }}|g" main.py
-	
+
     - name: Build with PyInstaller
       run: |
         pyinstaller --onefile --name "${{ matrix.asset_name }}" main.py
