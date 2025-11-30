@@ -4,6 +4,7 @@ import logging
 import time
 import random
 import re
+from threading import Lock
 
 SPECIAL_METAR_API_URL = "!ENV SPECIAL_MATER_API"  # 让它易于替换
 
