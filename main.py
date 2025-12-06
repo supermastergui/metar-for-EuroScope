@@ -1,14 +1,14 @@
 import requests, json
 from flask import Flask
-# import logging
+import logging
 import time
 import random
 import re
 from threading import Lock
-# import concurrent.futures
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging.handlers
-# import os
+import threading
+import psutil
 
 # 配置日志 - 只记录我们自己的日志，不记录werkzeug的访问日志
 logging.basicConfig(
@@ -49,6 +49,32 @@ AIRPORT_LIST_PATTERN = re.compile(r'^[A-Z]{4}(?:,[A-Z]{4})*$')
 # 添加允许小写和大写混合的模式
 VALID_AIRPORT_PATTERN_CASE_INSENSITIVE = re.compile(r'^[A-Za-z]{4}$')
 AIRPORT_LIST_PATTERN_CASE_INSENSITIVE = re.compile(r'^[A-Za-z]{4}(?:,[A-Za-z]{4})*$')
+
+
+# 性能监控
+class PerformanceMonitor:
+    def __init__(self):
+        self.requests_processed = 0
+        self.avg_response_time = 0
+        self.lock = threading.Lock()
+
+    def record_request(self, duration):
+        with self.lock:
+            self.requests_processed += 1
+            # 简单移动平均
+            self.avg_response_time = (self.avg_response_time * 0.9 + duration * 0.1)
+
+    def get_stats(self):
+        with self.lock:
+            return {
+                "requests_processed": self.requests_processed,
+                "avg_response_time_seconds": round(self.avg_response_time, 3),
+                "memory_usage_mb": round(psutil.Process().memory_info().rss / 1024 / 1024, 2)
+            }
+
+
+# 创建性能监控器
+perf_monitor = PerformanceMonitor()
 
 
 def get_headers():
@@ -153,11 +179,12 @@ def fetch_aviationweather_gov_bulk(airports_list):
 
     try:
         airports_str = ','.join(airports_list)
+        logger.debug(f"请求aviationweather.gov: {airports_str}")
 
         res = requests.get(
             f"https://aviationweather.gov/api/data/metar?ids={airports_str}",
             headers=get_headers(),
-            timeout=3
+            timeout=5  # 增加超时时间
         )
 
         results = {}
@@ -198,11 +225,12 @@ def fetch_apocfly_bulk(airports_list):
 
     try:
         airports_str = ','.join(airports_list)
+        logger.debug(f"请求apocfly.com: {airports_str}")
 
         res = requests.get(
             f"https://www.apocfly.com/api/metar?icao={airports_str}",
             headers=get_headers(),
-            timeout=3
+            timeout=5  # 增加超时时间
         )
 
         results = {}
@@ -239,6 +267,48 @@ def fetch_apocfly_bulk(airports_list):
     except Exception as e:
         logger.debug(f"apocfly.com请求出错: {e}")
         return {}
+
+
+def fetch_single_xiamenair(airport):
+    """从厦航API获取单个机场METAR"""
+    try:
+        logger.debug(f"请求xiamenair.com: {airport}")
+
+        res = requests.get(
+            f"https://xmairavt7.xiamenair.com/WarningPage/AirportReports?arp4code={airport}/1",
+            headers=get_headers(),
+            timeout=5  # 增加超时时间
+        )
+
+        if res.status_code == 200:
+            content = res.text
+            # 更精确的匹配模式
+            patterns = [
+                r'METAR\s+[A-Z]{4}\s+\d{6}Z[\s\S]+?=',
+                r'SPECI\s+[A-Z]{4}\s+\d{6}Z[\s\S]+?=',
+                r'TAF\s+[A-Z]{4}\s+\d{6}Z[\s\S]+?=',
+            ]
+
+            for pattern in patterns:
+                matches = re.findall(pattern, content, re.DOTALL)
+                if matches:
+                    metar_text = matches[0].strip()
+                    logger.debug(f"xiamenair.com找到METAR: {metar_text}")
+                    return clean_metar(metar_text)
+
+            logger.debug(f"xiamenair.com未找到METAR格式数据")
+            return ""
+        elif res.status_code == 500:
+            logger.debug("xiamenair.com服务器错误")
+            return ""
+        else:
+            logger.debug(f"xiamenair.com返回状态码: {res.status_code}")
+            return ""
+
+    except Exception as e:
+        logger.debug(f"xiamenair.com请求出错: {e}")
+        return ""
+
 
 def get_cached_metar(airport):
     """获取缓存的METAR数据"""
@@ -281,6 +351,92 @@ def normalize_airport_codes(airports_str):
         return [airports_upper]
 
 
+def _process_batch_result(data, source, airports_list, results):
+    """处理批量结果"""
+    if not data:
+        return
+
+    try:
+        if source in ["batch_vatsim", "batch_aviationweather", "batch_apocfly"]:
+            if isinstance(data, dict):
+                for airport in airports_list:
+                    if airport in data and data[airport] and airport not in results:
+                        results[airport] = data[airport]
+    except Exception as e:
+        logger.debug(f"处理{source}批量结果时出错: {e}")
+
+
+def _fetch_batch_metar(airports_list, max_workers, total_timeout):
+    """批量获取METAR数据"""
+    results = {}
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_source = {}
+            start_time = time.time()
+
+            # 提交批量请求任务
+            vatsim_data = fetch_vatsim_all_cached()
+            if vatsim_data:
+                future = executor.submit(parse_metar_from_vatsim_all, vatsim_data, airports_list)
+                future_to_source[future] = "batch_vatsim"
+
+            # aviationweather.gov批量请求
+            if airports_list:
+                future = executor.submit(fetch_aviationweather_gov_bulk, airports_list)
+                future_to_source[future] = "batch_aviationweather"
+
+            # apocfly.com批量请求
+            if airports_list:
+                future = executor.submit(fetch_apocfly_bulk, airports_list)
+                future_to_source[future] = "batch_apocfly"
+
+            # 为每个机场提交xiamenair请求
+            xiamenair_futures = {}
+            for airport in airports_list:
+                future = executor.submit(fetch_single_xiamenair, airport)
+                xiamenair_futures[future] = airport
+                future_to_source[future] = "xiamenair"
+
+            # 处理已完成的任务
+            completed_futures = []
+            while future_to_source and time.time() - start_time < total_timeout:
+                try:
+                    # 设置更短的超时时间检查
+                    done, not_done = concurrent.futures.wait(
+                        list(future_to_source.keys()),
+                        timeout=0.5,
+                        return_when=concurrent.futures.FIRST_COMPLETED
+                    )
+
+                    for future in done:
+                        source = future_to_source.pop(future, "unknown")
+                        try:
+                            data = future.result(timeout=1)
+                            if source in ["batch_vatsim", "batch_aviationweather", "batch_apocfly"]:
+                                _process_batch_result(data, source, airports_list, results)
+                            elif source == "xiamenair":
+                                airport = xiamenair_futures.get(future)
+                                if airport and airport not in results and data:
+                                    results[airport] = data
+                        except Exception as e:
+                            logger.debug(f"处理{source}结果时出错: {e}")
+
+                    completed_futures.extend(done)
+
+                except Exception as e:
+                    logger.debug(f"等待任务完成时出错: {e}")
+
+            # 取消未完成的任务
+            for future in list(future_to_source.keys()):
+                future.cancel()
+
+    except Exception as e:
+        logger.error(f"批量获取METAR数据时出错: {e}")
+
+    return results
+
+
 def fetch_metar_for_airports(airports_list):
     """获取多个机场的METAR数据（优化版本）"""
     if not airports_list:
@@ -302,59 +458,22 @@ def fetch_metar_for_airports(airports_list):
 
     logger.info(f"需要从网络获取的机场: {remaining_airports}")
 
-    # 第2步：并发请求所有数据源
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        # 准备所有任务
-        future_to_source = {}
+    # 第2步：使用更好的并发策略
+    # 限制最大并发数和总超时时间
+    MAX_WORKERS = 8  # 减少并发数
+    TOTAL_TIMEOUT = 5  # 总超时时间
 
-        # 获取缓存的VATSIM数据（快速）
-        vatsim_data = fetch_vatsim_all_cached()
-        if vatsim_data:
-            future = executor.submit(parse_metar_from_vatsim_all, vatsim_data, remaining_airports)
-            future_to_source[future] = "vatsim"
+    # 分组处理，避免一次性并发太多
+    BATCH_SIZE = 10
 
-        # aviationweather.gov批量请求
-        if remaining_airports:
-            future = executor.submit(fetch_aviationweather_gov_bulk, remaining_airports)
-            future_to_source[future] = "aviationweather"
+    for i in range(0, len(remaining_airports), BATCH_SIZE):
+        batch = remaining_airports[i:i + BATCH_SIZE]
+        batch_results = _fetch_batch_metar(batch, MAX_WORKERS, TOTAL_TIMEOUT)
 
-        # apocfly.com批量请求
-        if remaining_airports:
-            future = executor.submit(fetch_apocfly_bulk, remaining_airports)
-            future_to_source[future] = "apocfly"
-
-
-        # 处理结果，按照优先级
-        source_priority = {
-            "vatsim": 1,
-            "aviationweather": 2,
-            "apocfly": 3,
-        }
-
-        # 按照优先级顺序处理已完成的任务
-        completed_results = {}
-
-        for future in as_completed(future_to_source.keys(), timeout=3):
-            source = future_to_source[future]
-            try:
-                data = future.result(timeout=1)
-                if data:
-                    completed_results[source] = data
-
-                    # 根据数据类型处理
-                    if source in ["vatsim", "aviationweather", "apocfly"]:
-                        # 批量数据
-                        if isinstance(data, dict):
-                            for airport in remaining_airports:
-                                if airport in data and data[airport] and airport not in results:
-                                    results[airport] = data[airport]
-                                    set_cached_metar(airport, data[airport])
-                        if airport and airport not in results and data:
-                            results[airport] = data
-                            set_cached_metar(airport, data)
-
-            except Exception as e:
-                logger.debug(f"处理{source}结果时出错: {e}")
+        for airport, metar in batch_results.items():
+            if airport not in results and metar:
+                results[airport] = metar
+                set_cached_metar(airport, metar)
 
     # 确保所有请求的机场都有结果
     for airport in airports_list:
@@ -371,32 +490,55 @@ def handle_airports(airports):
         if not airports:
             return json.dumps({"error": "No airport codes provided"}), 400
 
-        # 标准化机场代码（自动转换为大写）
+        # 移除可能的JSON字符串错误
+        airports_clean = airports.strip()
+        if airports_clean.startswith('{"ERROR":'):
+            logger.warning(f"收到错误的请求格式: {airports_clean[:100]}")
+            return json.dumps({"error": "Invalid request format"}), 400
+
+        # 标准化机场代码
         try:
-            airports_list = normalize_airport_codes(airports)
+            airports_list = normalize_airport_codes(airports_clean)
         except ValueError as e:
-            logger.warning(str(e))
+            logger.warning(f"无效的机场代码: {airports_clean}")
             return json.dumps({"error": str(e)}), 400
+
+        # 限制一次性请求的机场数量
+        MAX_AIRPORTS = 50
+        if len(airports_list) > MAX_AIRPORTS:
+            airports_list = airports_list[:MAX_AIRPORTS]
+            logger.warning(f"请求机场数量超过限制，只处理前{MAX_AIRPORTS}个")
 
         # 检查是否是多个机场
         if len(airports_list) > 1:
-            logger.info(f"收到批量机场代码请求: {airports_list}")
+            logger.info(f"收到批量机场代码请求: {airports_list[:5]}...")  # 只显示前5个
 
-            # 获取METAR数据
+            # 获取METAR数据，设置总超时
             start_time = time.time()
-            results = fetch_metar_for_airports(airports_list)
-            elapsed_time = time.time() - start_time
+            try:
+                results = fetch_metar_for_airports(airports_list)
+                elapsed_time = time.time() - start_time
 
-            logger.info(f"批量请求完成，耗时: {elapsed_time:.2f}秒")
+                # 记录性能指标
+                perf_monitor.record_request(elapsed_time)
 
-            # 返回JSON格式结果
-            response = {
-                "success": True,
-                "timestamp": time.time(),
-                "response_time": f"{elapsed_time:.2f}s",
-                "data": results
-            }
-            return json.dumps(response, ensure_ascii=False)
+                logger.info(f"批量请求完成，处理{len(airports_list)}个机场，耗时: {elapsed_time:.2f}秒")
+
+                # 返回JSON格式结果
+                response = {
+                    "success": True,
+                    "timestamp": time.time(),
+                    "response_time": f"{elapsed_time:.2f}s",
+                    "airports_count": len(airports_list),
+                    "data": results
+                }
+                return json.dumps(response, ensure_ascii=False)
+
+            except Exception as e:
+                elapsed_time = time.time() - start_time
+                perf_monitor.record_request(elapsed_time)
+                logger.error(f"批量处理失败，耗时: {elapsed_time:.2f}秒，错误: {e}")
+                return json.dumps({"error": "Failed to fetch METAR data"}), 500
         else:
             # 单个机场处理
             airport_code = airports_list[0]
@@ -410,18 +552,29 @@ def handle_airports(airports):
 
             # 获取METAR数据
             start_time = time.time()
-            results = fetch_metar_for_airports([airport_code])
-            elapsed_time = time.time() - start_time
+            try:
+                results = fetch_metar_for_airports([airport_code])
+                elapsed_time = time.time() - start_time
 
-            logger.info(f"请求完成，耗时: {elapsed_time:.2f}秒")
+                # 记录性能指标
+                perf_monitor.record_request(elapsed_time)
 
-            metar = results.get(airport_code, "")
+                logger.info(f"请求完成，耗时: {elapsed_time:.2f}秒")
 
-            if metar:
-                return metar
-            else:
-                logger.warning(f"无法获取 {airport_code} 的METAR数据")
+                metar = results.get(airport_code, "")
+
+                if metar:
+                    return metar
+                else:
+                    logger.warning(f"无法获取 {airport_code} 的METAR数据")
+                    return ""
+
+            except Exception as e:
+                elapsed_time = time.time() - start_time
+                perf_monitor.record_request(elapsed_time)
+                logger.error(f"单机场处理失败，耗时: {elapsed_time:.2f}秒，错误: {e}")
                 return ""
+
     except Exception as e:
         logger.error(f"处理请求时发生错误: {e}")
         return json.dumps({"error": "Internal server error"}), 500
@@ -442,6 +595,7 @@ def index():
                 .endpoint { font-weight: bold; color: #007bff; }
                 .priority { background: #e9ecef; padding: 5px 10px; border-radius: 4px; margin: 5px 0; }
                 .note { background: #fff3cd; padding: 10px; border-radius: 4px; margin: 10px 0; border: 1px solid #ffeaa7; }
+                .stats { background: #d4edda; padding: 10px; border-radius: 4px; margin: 10px 0; border: 1px solid #c3e6cb; }
             </style>
         </head>
         <body>
@@ -449,6 +603,16 @@ def index():
 
             <div class="note">
                 <strong>注意：</strong>机场代码不区分大小写，会自动转换为大写。
+            </div>
+
+            <div class="stats">
+                <p><strong>服务状态：</strong>正常运行</p>
+                <p><strong>性能指标：</strong></p>
+                <ul>
+                    <li>已处理请求: <span id="requests_count">0</span></li>
+                    <li>平均响应时间: <span id="avg_response_time">0</span>秒</li>
+                    <li>内存使用: <span id="memory_usage">0</span> MB</li>
+                </ul>
             </div>
 
             <p>使用方式：</p>
@@ -481,6 +645,7 @@ def index():
                 <li class="priority">VATSIM ALL (缓存60秒)</li>
                 <li class="priority">aviationweather.gov</li>
                 <li class="priority">apocfly.com</li>
+                <li class="priority">xiamenair.com</li>
             </ol>
 
             <p><strong>返回格式：</strong></p>
@@ -492,8 +657,29 @@ def index():
             <p><strong>其他端点：</strong></p>
             <ul>
                 <li><a href="/health" target="_blank">/health</a> - 健康检查</li>
+                <li><a href="/status" target="_blank">/status</a> - 详细状态</li>
                 <li><a href="/cache/clear" target="_blank">/cache/clear</a> - 清空缓存</li>
             </ul>
+
+            <script>
+                // 动态更新状态
+                function updateStats() {
+                    fetch('/status')
+                        .then(response => response.json())
+                        .then(data => {
+                            document.getElementById('requests_count').textContent = data.performance.requests_processed;
+                            document.getElementById('avg_response_time').textContent = data.performance.avg_response_time_seconds;
+                            document.getElementById('memory_usage').textContent = data.performance.memory_usage_mb;
+                        })
+                        .catch(error => console.error('获取状态失败:', error));
+                }
+
+                // 页面加载时更新一次
+                updateStats();
+
+                // 每30秒更新一次
+                setInterval(updateStats, 30000);
+            </script>
         </body>
     </html>
     """
@@ -512,7 +698,32 @@ def health_check():
         "timestamp": time.time(),
         "cache_size": len(metar_cache),
         "vatsim_cache": "available" if vatsim_all_cache else "none",
-        "version": "1.0.0"
+        "version": "1.0.1"
+    })
+
+
+@app.route('/status')
+def status_check():
+    """状态检查端点，显示更多信息"""
+    with cache_lock:
+        cache_info = {
+            "size": len(metar_cache),
+            "items": list(metar_cache.keys())[:10]  # 只显示前10个
+        }
+
+    return json.dumps({
+        "status": "healthy",
+        "timestamp": time.time(),
+        "cache": cache_info,
+        "vatsim_cache": "available" if vatsim_all_cache else "none",
+        "vatsim_cache_length": len(vatsim_all_cache) if vatsim_all_cache else 0,
+        "performance": perf_monitor.get_stats(),
+        "version": "1.0.1",
+        "concurrency": {
+            "max_workers": 8,
+            "batch_size": 10,
+            "timeout": 5
+        }
     })
 
 
